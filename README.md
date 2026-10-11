@@ -2,7 +2,7 @@
 
 Multiple linear regression in R to predict body weight (kg) from eating habits, physical activity, and demographics, using the UCI *Estimation of Obesity Levels* dataset (2,087 individuals from Mexico, Peru, and Colombia).
 
-Final project for **STAT 420: Statistical Modeling in R** (UIUC MCS) by Evan Yuan
+Final project for **STAT 420: Statistical Modeling in R** (UIUC MCS)
 
 **[Full report (PDF)](report/project-evanyy2.pdf)** | **[HTML version](https://evany50.github.io/Body-Weight-Prediction/)**
 ---
