@@ -1,0 +1,15 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+
+# R Markdown / LaTeX build files
+*_cache/
+*_files/
+*.log
+*.aux
+*.out
+*.tex
+*.synctex.gz
