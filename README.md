@@ -4,6 +4,7 @@ Multiple linear regression in R to predict body weight (kg) from eating habits, 
 
 Final project for **STAT 420: Statistical Modeling in R** (UIUC MCS), by Evan Yuan
 
+**[Full report (PDF)](report/project-evanyy2.pdf)** | **[HTML version](https://evany50.github.io/Body-Weight-Prediction/)**
 ---
 
 ## Key Results
