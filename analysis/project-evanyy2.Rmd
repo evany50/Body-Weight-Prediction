@@ -1,0 +1,786 @@
+---
+title: "Predicting Body Weight Based on Lifestyle and Demographic Factors"
+author: "Evan Yuan"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    df_print: kable
+    latex_engine: xelatex
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+header-includes: 
+          - \usepackage{comment}
+          - \usepackage[document]{ragged2e}
+params:
+  soln: true    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 5)
+#install.packages(c("tidyverse", "car", "MASS", "glmnet", "caret", "lmtest", "corrplot"))
+library(tidyverse)
+library(car)
+library(MASS)
+library(glmnet)
+library(caret)
+```
+
+\newpage
+
+# 1. INTRODUCTION
+
+## 1.1 Background
+
+Obesity has become a global health epidemic, with obesity rates nearly tripling worldwide since 1975 according to the World Obesity Federation. Understanding the factors that contribute to body weight is crucial for developing effective public health interventions. This study analyzes data collected from 2,111 individuals across Mexico, Peru, and Colombia to model and predict body weight based on various lifestyle, demographic, and behavioral factors.
+
+Our dataset, sourced from the UCI Machine Learning Repository, contains comprehensive information about individuals' physical characteristics, dietary habits, and activity levels. Each observation represents a single person and includes 17 variables capturing various aspects of their lifestyle. Our primary goal is to develop a linear regression model that can accurately predict body weight using both quantitative predictors (such as age and height) and categorical predictors (such as gender and family history).
+
+Our analysis will explore how factors including physical activity frequency, water consumption, eating habits, and transportation methods relate to body weight. By identifying significant predictors and their relationships with weight, this study aims to provide insights that could inform both individual health decisions and broader public health strategies.
+
+## 1.2 Dataset Description
+
+- **Source**: UCI Machine Learning Repository - Estimation of Obesity Levels Based on Eating Habits and Physical Condition
+- **Observations**: 2,111 individuals from Mexico, Peru, and Colombia  
+- **Response Variable**: Weight (kg) - continuous quantitative variable
+- **Predictors**: Age, Height, Gender, family history, eating habits (FAVC, FCVC, NCP), smoking (SMOKE), water consumption (CH2O), calorie monitoring (SCC), physical activity (FAF), technology use (TUE), CAEC (eating between meals), CALC (alcohol), and MTRANS (transportation)
+
+# 2. METHODS
+
+## 2.1 Data Cleaning
+
+```{r}
+obesity <- read.csv("ObesityDataSet_raw_and_data_sinthetic.csv")
+
+missing_summary <- colSums(is.na(obesity))
+if(sum(missing_summary) > 0) {
+  print("Missing values per column:")
+  print(missing_summary[missing_summary > 0])
+} else {
+  cat("No missing values detected in the dataset.\n")
+}
+
+# Check for duplicates
+cat("Number of duplicate rows:", sum(duplicated(obesity)), "\n")
+
+# Remove duplicates if any exist
+if (sum(duplicated(obesity)) > 0) {
+  cat("Removing", sum(duplicated(obesity)), "duplicate rows...\n")
+  obesity = obesity[!duplicated(obesity), ]
+  cat("Rows after removing duplicates:", nrow(obesity), "\n")
+} else {
+  cat("No duplicates to remove.\n")
+}
+
+# Convert categorical variables to factors
+categorical_vars <- c("Gender", "family_history_with_overweight", "FAVC", "CAEC", 
+                      "SMOKE", "SCC", "CALC", "MTRANS", "NObeyesdad")
+for(var in categorical_vars) {
+  obesity[[var]] <- as.factor(obesity[[var]])
+}
+```
+
+The data cleaning process revealed no missing values in our dataset of 2,087 observations. All categorical variables were properly converted to factors for appropriate handling in our regression models. All duplicate values were removed.
+
+## 2.2 Exploratory Data Analysis (EDA)
+
+```{r eda_summary}
+# Summary statistics for quantitative variables
+quantitative_vars <- c("Age", "Height", "Weight", "FCVC", "NCP", "CH2O", "FAF", "TUE")
+summary(obesity[, quantitative_vars])
+
+# Distribution of categorical response variable
+table(obesity$NObeyesdad)
+```
+
+```{r eda_plots1, fig.height=8}
+# Distribution of Weight (response variable)
+par(mfrow = c(2, 2))
+hist(obesity$Weight, main = "Distribution of Weight", xlab = "Weight (kg)", 
+     col = "lightblue", breaks = 30)
+boxplot(obesity$Weight, main = "Boxplot of Weight", ylab = "Weight (kg)", 
+        col = "lightgreen")
+qqnorm(obesity$Weight, main = "Q-Q Plot of Weight")
+qqline(obesity$Weight, col = "red")
+plot(density(obesity$Weight), main = "Density Plot of Weight", xlab = "Weight (kg)")
+```
+
+```{r eda_plots2, fig.height=6}
+# Relationship between Weight and key predictors
+par(mfrow = c(2, 2))
+plot(obesity$Age, obesity$Weight, main = "Weight vs Age", 
+     xlab = "Age", ylab = "Weight (kg)", pch = 19, col = rgb(0,0,1,0.3))
+abline(lm(Weight ~ Age, data = obesity), col = "red", lwd = 2)
+
+plot(obesity$Height, obesity$Weight, main = "Weight vs Height", 
+     xlab = "Height (m)", ylab = "Weight (kg)", pch = 19, col = rgb(0,0,1,0.3))
+abline(lm(Weight ~ Height, data = obesity), col = "red", lwd = 2)
+
+boxplot(Weight ~ Gender, data = obesity, main = "Weight by Gender", 
+        xlab = "Gender", ylab = "Weight (kg)", col = c("pink", "lightblue"))
+
+boxplot(Weight ~ family_history_with_overweight, data = obesity, 
+        main = "Weight by Family History", xlab = "Family History", 
+        ylab = "Weight (kg)", col = c("lightgreen", "coral"))
+```
+
+```{r eda_correlation, fig.height=6}
+# Correlation matrix for quantitative variables
+library(corrplot)
+quant_data <- obesity[, quantitative_vars]
+cor_matrix <- cor(quant_data)
+corrplot(cor_matrix, method = "color", type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45, addCoef.col = "black", number.cex = 0.7)
+```
+
+
+Our dataset consists primarily of young adults, with age centered in the early 20s and a right-skewed tail extending into older ages. Height is tightly distributed around approximately 1.70 meters, while weight shows substantial variability, ranging from under 40 kg to over 170 kg. Weight has a clear linear relationship with age and height. The boxplots showed that individuals with a family history of overweight display noticeably higher weights compared to those without such a history. The correlation matrix showed that height had the strongest correlation with weight (positive relationship). Age shows a moderate positive correlation with weight. FAF (physical activity) shows negative correlation with Weight as expected. Most predictor correlations are weak, suggesting minimal multicollinearity issues.
+
+
+## 2.3 Initial Full Linear Model
+
+```{r full_model}
+# Fit the full model with all predictors except NObeyesdad
+# because it directly relates to weight
+full_model <- lm(Weight ~ . - NObeyesdad, data = obesity)
+summary(full_model)
+```
+
+### Model Interpretation
+
+The initial full model includes all available predictors except the obesity category variable (NObeyesdad), which is directly derived from weight and BMI, making it inappropriate as a predictor. Weight (kg) is the response variable.
+
+**Coefficient Interpretation:**
+
+**Quantitative Predictors:**
+
+- **Height**: Height has the strongest association with weight. A one-meter increase in height is associated with an average increase of approximately `r round(coef(full_model)["Height"], 0)` kg in weight.
+
+- **Age**: Age is positively associated with weight. A one-year increase in age corresponds to an average increase of approximately `r round(coef(full_model)["Age"], 2)` kg in weight.
+
+- **Physical Activity Frequency (FAF)**: Significantly negatively associated with weight. Each one-unit increase in physical activity frequency corresponds to an average decrease of `r round(abs(coef(full_model)["FAF"]), 2)` kg in weight.
+
+- **Daily Water Consumption (CH2O)**: Shows a small but statistically significant positive association (`r round(coef(full_model)["CH2O"], 2)` kg per unit), suggesting that water intake alone does not strongly differentiate body weight once other behaviors are accounted for.
+
+**Categorical Predictors:**
+
+- **Gender (Male)**: Males weigh on average `r round(abs(coef(full_model)["GenderMale"]), 2)` kg less than females when all other factors are held constant, contrary to typical population patterns, possibly due to other confounding factors in this dataset.
+
+- **Family History of Overweight**: Individuals with a family history of overweight weigh approximately `r round(coef(full_model)["family_history_with_overweightyes"], 2)` kg more on average than those without such history, highlighting the strong influence of genetic and environmental factors.
+
+- **Frequent Consumption of High-Calorie Foods (FAVC)**: Associated with a `r round(coef(full_model)["FAVCyes"], 2)` kg increase in weight compared to those who don't frequently consume high-calorie foods.
+
+- **Transportation Mode**: 
+  - Public transportation users weigh approximately `r round(coef(full_model)["MTRANSPublic_Transportation"], 2)` kg more than automobile users
+  - Motorbike users weigh about `r round(coef(full_model)["MTRANSMotorbike"], 2)` kg more than automobile users
+  - Walking shows a non-significant increase of `r round(coef(full_model)["MTRANSWalking"], 2)` kg compared to automobile use
+
+**R-squared Interpretation:**
+
+The R-squared value of `r round(summary(full_model)$r.squared, 4)` indicates that approximately `r round(summary(full_model)$r.squared * 100, 2)`% of the variation in weight can be explained by the predictors in our model. The adjusted R-squared is `r round(summary(full_model)$adj.r.squared, 4)`, which we will use as a baseline for model comparison. The small difference between R-squared and adjusted R-squared suggests that, despite the large number of predictors, the model is not overly inflated by unnecessary variables.
+
+
+### Model Diagnostics
+
+```{r diagnostics, fig.height=8}
+par(mfrow = c(2, 2))
+plot(full_model)
+```
+
+```{r additional_diagnostics}
+library(lmtest)
+# Check for multicollinearity
+vif_values <- vif(full_model)
+print("Variance Inflation Factors:")
+sort(vif_values, decreasing = TRUE)[1:10] 
+
+# Normality test for residuals
+shapiro_test <- shapiro.test(sample(residuals(full_model), 2087))
+cat("\nShapiro-Wilk test p-value:", shapiro_test$p.value, "\n")
+
+# Breusch-Pagan test for heteroscedasticity
+bp_test <- bptest(full_model)
+cat("Breusch-Pagan test p-value:", bp_test$p.value, "\n")
+```
+
+### Cross-Validation
+
+```{r cross_validation}
+# Perform 10-fold cross-validation
+set.seed(420)
+train_control <- trainControl(method = "cv", number = 10)
+
+# Create formula for full model
+full_formula <- as.formula(Weight ~ . - NObeyesdad)
+
+# Function to perform CV
+get_cv_metrics <- function(model_formula, data, model_name) {
+  cv_result <- train(model_formula, 
+                    data = data, 
+                    method = "lm", 
+                    trControl = train_control)
+  
+  return(data.frame(
+    Model = model_name,
+    CV_RMSE = cv_result$results$RMSE,
+    CV_R_squared = cv_result$results$Rsquared,
+    CV_MAE = cv_result$results$MAE
+  ))
+}
+get_cv_metrics(formula(full_model), obesity, "Full Model")
+
+baseline_metrics <- get_cv_metrics(formula(full_model), obesity, "Full Model")
+baseline_rmse <- baseline_metrics$CV_RMSE
+```
+Based on the diagnostics, the full model satisfies most of the regression assumptions. The Fitted vs Residuals plot shows relatively random scatter around zero. Linearity is reasonably satisfied. The Q-Q plot shows mild departures from normality in the tails, and the Shapiro-Wilk test rejects normality. Multicollinearity is not a concern (all VIFs < 5). The Breusch–Pagan test indicates heteroscedasticity. Given the reasonable diagnostics and baseline predictive performance, the next section explores alternative model specifications aimed at addressing the observed heteroscedasticity.
+
+## 2.4 Model Improvement Methods
+
+### Variable Selection Using Stepwise Methods
+
+```{r stepwise_selection}
+# Backward selection using AIC
+model_backward_aic <- step(full_model, direction = "backward", trace = 0)
+#cat("Backward Selection (AIC) - Variables retained:\n")
+#names(coef(model_backward_aic))
+get_cv_metrics(formula(model_backward_aic), obesity, "Backward AIC")
+
+# Forward selection
+null_model <- lm(Weight ~ 1, data = obesity)
+model_forward_aic <- step(null_model, 
+scope = list(lower = null_model, upper = full_model), direction = "forward", trace = 0)
+#cat("\n\nForward Selection (AIC) - Variables selected:\n")
+#names(coef(model_forward_aic))
+get_cv_metrics(formula(model_forward_aic), obesity, "Forward AIC")
+
+# Both directions
+model_both_aic <- step(full_model, direction = "both", trace = 0)
+get_cv_metrics(formula(model_both_aic), obesity, "Both-direction AIC")
+
+# Using BIC for more conservative selection
+n <- nrow(obesity)
+model_backward_bic <- step(full_model, direction = "backward", k = log(n), trace = 0)
+
+#cat("\n\nBackward Selection (BIC) - Variables retained:\n")
+#names(coef(model_backward_bic))
+get_cv_metrics(formula(model_backward_bic), obesity, "Backward BIC")
+```
+
+```{r compare_selection_models}
+# Compare models from selection procedures
+cat("Model Comparison - Adjusted R-squared:\n")
+cat("Full Model:", summary(full_model)$adj.r.squared, "\n")
+cat("Backward AIC:", summary(model_backward_aic)$adj.r.squared, "\n")
+cat("Forward AIC:", summary(model_forward_aic)$adj.r.squared, "\n")
+cat("Backward BIC:", summary(model_backward_bic)$adj.r.squared, "\n")
+
+# ANOVA comparison (nested models)
+anova(model_backward_bic, model_backward_aic, full_model)
+```
+Variable selection using stepwise methods showed minimal improvement in predictive performance. AIC-based stepwise selection (backward, forward, and both directions) retained most predictors from the full model. BIC-based selection removed several predictors. Removing predictors did not meaningfully improve model fit. The variable selection models all had RMSE around 17.1 kg. 
+
+
+### Polynomial Transformations
+
+```{r polynomial_terms}
+# Add polynomial terms for continuous predictors with strong relationships
+model_poly <- lm(Weight ~ poly(Height, 2) + poly(Age, 2) + poly(FAF, 2) + Gender + 
+family_history_with_overweight + FAVC + FCVC + NCP + CAEC + SMOKE + CH2O + 
+SCC + TUE + CALC + MTRANS, data = obesity)
+
+summary(model_poly)$adj.r.squared
+
+# Test if polynomial terms improve the model
+model_height_poly <- lm(Weight ~ Height + I(Height^2) + Age + Gender + 
+family_history_with_overweight + FAVC + FCVC + NCP + 
+CAEC + SMOKE + CH2O + SCC + FAF + TUE + CALC + 
+MTRANS, data = obesity)
+
+anova(model_backward_aic, model_height_poly)
+
+get_cv_metrics(formula(model_poly), obesity, "Polynomial")
+```
+Adding quadratic terms for Height, Age, and Physical Activity (FAF) increased adjusted R squared to approximately 0.593, representing a noticeable improvement over the initial linear model.
+
+### Interaction Terms
+
+```{r interaction_terms}
+# Test interactions between key variables
+model_interact1 <- lm(Weight ~ Height * Gender + Age + family_history_with_overweight + 
+FAVC + FCVC + NCP + CAEC + SMOKE + CH2O + SCC + FAF + TUE + CALC + MTRANS, data = obesity)
+
+model_interact2 <- lm(Weight ~ Height + Age * family_history_with_overweight + Gender + 
+FAVC + FCVC + NCP + CAEC + SMOKE + CH2O + SCC + FAF + TUE + CALC + MTRANS, data = obesity)
+
+model_interact3 <- lm(Weight ~ Height * Age + Gender + family_history_with_overweight + 
+FAVC + FCVC + NCP + CAEC + SMOKE + CH2O + SCC + FAF + TUE + CALC + MTRANS, data = obesity)
+
+# Compare interaction models
+cat("Adjusted R-squared with interactions:\n")
+cat("Height * Gender:", summary(model_interact1)$adj.r.squared, "\n")
+cat("Age * Family History:", summary(model_interact2)$adj.r.squared, "\n")
+cat("Height * Age:", summary(model_interact3)$adj.r.squared, "\n")
+
+# Test significance of interactions
+anova(model_backward_aic, model_interact1)
+
+get_cv_metrics(formula(model_interact1), obesity, "Height * Gender")
+```
+The Height × Gender interaction improved the model fit from the baseline model and the stepwise models. Allowing the relationship between height and weight to differ by gender meaningfully improves model performance.
+
+### Combined Model: AIC Selection + Interaction
+
+```{r combined_model}
+# Combine AIC backward selection with best interaction
+model_combined <- lm(Weight ~ Height * Gender + Age + 
+                    family_history_with_overweight + FAVC + FCVC + 
+                    CAEC + CH2O + SCC + FAF + TUE + CALC + MTRANS, 
+                    data = obesity)
+
+cat("Combined Model Formula:\n")
+print(formula(model_combined))
+#summary(model_combined)
+summary_combined <- summary(model_combined)
+
+cat("Adjusted R-squared:", summary_combined$adj.r.squared, "\n")
+cat("Residual Standard Error:", summary_combined$sigma, "kg\n")
+cat("F-statistic:", summary_combined$fstatistic[1], "\n")
+cat("Degrees of Freedom:", summary_combined$df[1], "used,", 
+    summary_combined$df[2], "residual\n")
+```
+The combined model retains important predictors from AIC selection and includes the best interaction. The combined approach achieves an adjusted R squared of 0.592 and a cross validated RMSE of 16.79 kg.  
+
+
+### Box-Cox Transformation
+
+```{r boxcox}
+# Apply Box-Cox transformation to find optimal lambda
+bc <- boxcox(model_backward_aic, plotit = TRUE)
+lambda <- bc$x[which.max(bc$y)]
+
+cat("Optimal lambda for Box-Cox transformation:", lambda, "\n")
+
+if (abs(lambda - 1) > 0.1) {
+  obesity_bc <- obesity  
+  if (abs(lambda) < 1e-6) {
+    obesity_bc$Weight_bc <- log(obesity_bc$Weight)
+  } else {
+    obesity_bc$Weight_bc <- (obesity_bc$Weight^lambda - 1) / lambda
+  }
+
+  model_boxcox <- lm(
+    Weight_bc ~ Height + Age + Gender +
+    family_history_with_overweight + FCVC + NCP +
+    CAEC + CH2O + FAF + TUE + CALC + MTRANS,
+    data = obesity_bc
+  )
+
+  cat(
+    "Adjusted R-squared with Box-Cox transformation:",
+    summary(model_boxcox)$adj.r.squared, "\n"
+  )
+
+} else {
+  cat("Lambda close to 1 — no transformation necessary\n")
+}
+
+```
+The optimal Box-Cox λ is 0.18. The transformed model’s adjusted R² (0.597) is on the transformed scale and isn’t directly comparable to the other models, and it makes coefficients harder to interpret in kg, so we kept Weight untransformed.
+
+```{r}
+full_formula <- Weight ~ . - NObeyesdad
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+set.seed(420)
+
+cv_full_fixed <- train(
+  full_formula,
+  data = obesity,
+  method = "lm",
+  trControl = train_control
+)
+
+cv_full_fixed$results
+```
+
+
+### Model Comparison
+
+```{r model_comparison}
+# Calculate RMSE for different models using cross-validation
+set.seed(420)
+
+full_model <- lm(Weight ~ . - NObeyesdad, data = obesity)
+
+
+models_to_test <- list(
+  "Full Model" = as.formula(Weight ~ . - NObeyesdad),
+  "Backward_AIC" = formula(model_backward_aic),
+  "Backward_BIC" = formula(model_backward_bic),
+  "Height_Gender_Interact" = as.formula(Weight ~ Height * Gender + Age + 
+  family_history_with_overweight + FAVC + FCVC + NCP + CAEC + SMOKE + CH2O + SCC +  FAF + TUE + CALC + MTRANS),
+  "Polynomial" = as.formula(Weight ~ poly(Height, 2) + poly(Age, 2) + Gender +  
+  family_history_with_overweight + FAVC + FCVC + NCP + 
+CAEC + SMOKE + CH2O + SCC + FAF + TUE + CALC + MTRANS),
+  "Combined_AIC_Interaction" = formula(model_combined)
+)
+
+cv_results <- data.frame(Model = character(), RMSE = numeric(), 
+                         Rsquared = numeric(), MAE = numeric())
+
+for(model_name in names(models_to_test)) {
+  cv_temp <- train(models_to_test[[model_name]], data = obesity, 
+                  method = "lm", trControl = train_control)
+  cv_results <- rbind(cv_results, 
+                      data.frame(Model = model_name,
+                                RMSE = cv_temp$results$RMSE,
+                                Rsquared = cv_temp$results$Rsquared,
+                                MAE = cv_temp$results$MAE))
+}
+
+cv_results <- cv_results[order(cv_results$RMSE), ]
+row.names(cv_results) <- NULL
+print(cv_results)
+```
+The Combined model shows best balance across all metrics. The interaction and polynomial models both performed well. Backward BIC performed the worst.
+
+# 3. CONCLUSION
+
+## 3.1 Final Model Selection
+
+Based on comprehensive model comparison using adjusted R-squared, cross-validation RMSE, and mean absolute error, we select the model that combines AIC backward selection with Height-Gender interaction as our final model. 
+
+```{r final_model}
+# Final selected model
+final_model <- lm(Weight ~ Height * Gender + Age + 
+                    family_history_with_overweight + FAVC + FCVC + 
+                    CAEC + CH2O + SCC + FAF + TUE + CALC + MTRANS, 
+                    data = obesity)
+
+summary(final_model)
+```
+
+## 3.2 Final Model Analysis
+
+### Model Performance Metrics
+
+```{r final_metrics}
+cat("Final Model Performance:\n")
+cat("R-squared:", summary(final_model)$r.squared, "\n")
+cat("Adjusted R-squared:", summary(final_model)$adj.r.squared, "\n")
+cat("Residual Standard Error:", summary(final_model)$sigma, "\n")
+cat("AIC:", AIC(final_model), "\n")
+cat("BIC:", BIC(final_model), "\n")
+
+# Compare with initial model
+cat("\nComparison with Initial Full Model:\n")
+cat("Initial Adjusted R-squared:", summary(full_model)$adj.r.squared, "\n")
+
+cat("Improvement:", summary(final_model)$adj.r.squared - 
+      summary(full_model)$adj.r.squared, "\n")
+cat("Initial AIC:", AIC(full_model), "\n")
+cat("Initial BIC:", BIC(full_model), "\n")
+```
+
+**Selection Rationale:**
+
+The Combined Model was chosen over alternatives because it produced the lowest cross-validated RMSE (≈16.8 kg), improving slightly upon both the full model and AIC/BIC models. Incorporating the Height × Gender interaction yielded modest gains in predictive performance. 
+
+
+### Final Model Diagnostics
+
+```{r final_diagnostics, fig.height=8}
+par(mfrow = c(2, 2))
+plot(final_model)
+```
+
+```{r}
+plot(fitted(final_model), resid(final_model), col = "dodgerblue", pch = 20,
+xlab = "Fitted Values", ylab = "Residuals",
+main = "Fitted vs Residuals")
+abline(h = 0, col = "darkorange", lwd = 2)
+
+hist(resid(final_model), breaks = 40, col = "darkorange", border = "dodgerblue",
+main = "Distribution of Residuals", xlab = "Residuals")
+
+qqnorm(resid(final_model), col = "dodgerblue", pch = 20,
+       main = "Normal Q-Q Plot")
+qqline(resid(final_model), col = "darkorange", lwd = 2)
+```
+
+
+
+```{r final_assumptions}
+# Check assumptions
+cat("Final Model Assumption Tests:\n")
+
+# Normality
+shapiro_final <- shapiro.test(sample(residuals(final_model), 2087))
+cat("Shapiro-Wilk test p-value:", shapiro_final$p.value, "\n")
+
+# Heteroscedasticity
+bp_final <- bptest(final_model)
+cat("Breusch-Pagan test p-value:", bp_final$p.value, "\n")
+
+# Multicollinearity
+vif_final <- vif(final_model)
+cat("\nVIF values (top 5):\n")
+print(sort(vif_final, decreasing = TRUE)[1:5])
+```
+
+### Influential Observations
+
+```{r influential}
+# Check for influential points
+cooksd <- cooks.distance(final_model)
+influential_points <- which(cooksd > 4/nrow(obesity))
+cat("Number of potentially influential observations:", length(influential_points), "\n")
+
+# Examine effect of removing most influential points
+if(length(influential_points) > 0) {
+  obesity_clean <- obesity[-influential_points[1:min(5, length(influential_points))], ]
+  final_model_clean <- lm(formula(final_model), data = obesity_clean)
+  
+  cat("\nModel without top influential points:\n")
+  cat("Original Adjusted R-squared:", summary(final_model)$adj.r.squared, "\n")
+  cat("Clean Adjusted R-squared:", summary(final_model_clean)$adj.r.squared, "\n")
+}
+```
+
+### Cross-Validation of Final Model
+
+```{r final_cv}
+set.seed(420)
+cv_final <- train(formula(final_model), data = obesity, 
+                 method = "lm", trControl = train_control)
+
+cat("10-Fold Cross-Validation for Final Model:\n")
+cat("RMSE:", cv_final$results$RMSE, "\n")
+cat("R-squared:", cv_final$results$Rsquared, "\n")
+cat("MAE:", cv_final$results$MAE, "\n")
+
+cat("\n\nComparison with Baseline:\n")
+cat("Baseline RMSE:", baseline_rmse, "\n")
+cat("Final RMSE:", cv_final$results$RMSE, "\n")
+cat("Improvement:", baseline_rmse - cv_final$results$RMSE, "\n")
+```
+Linearity is reasonably satisfied. Residuals show some departure from normality in the tails and clear heteroscedasticity (Breusch–Pagan p < 0.001). About 4% of points are flagged as influential, but removing the top ones barely changes adjusted R².
+
+### Model Interpretation
+```{r final-interpretation}
+cat("Coefficient Estimates:\n\n")
+print(summary(final_model)$coefficients)
+
+# Interpret key coefficients
+# Age
+age_coef = coef(final_model)["Age"]
+
+# Height and Gender interaction
+height_coef = coef(final_model)["Height"]
+
+if ("Height:GenderMale" %in% names(coef(final_model))) {
+  int_coef = coef(final_model)["Height:GenderMale"]
+}
+
+# Family history
+if ("family_history_with_overweightyes" %in% names(coef(final_model))) {
+  fam_coef = coef(final_model)["family_history_with_overweightyes"]
+}
+```
+
+
+- **Age:** For each additional year of age, weight increases by `r round(age_coef, 3)` kg on average, holding all else constant.
+- **Height:** The effect of height on weight depends on gender.
+  - **For Females:** Each additional meter increases weight by `r round(height_coef, 2)` kg on average.
+  - **For Males:** Each additional meter increases weight by `r round(height_coef + int_coef, 2)` kg on average.
+- **Family history:** Having family history of overweight changes weight by `r round(fam_coef, 2)` kg on average.
+
+
+## 3.3 Concluding Thoughts
+
+### Model Interpretation
+
+Our final multiple linear regression model explains approximately `r round(summary(final_model)$adj.r.squared * 100, 1)`% of the variance in body weight. The model performs well with a 10-fold cross-validated RMSE of 16.81 kg, indicating reasonable predictive accuracy.
+
+The highly significant F-statistic confirms that our model is significantly better than an intercept-only model. This suggests that the selected lifestyle and demographic factors collectively have meaningful relationships with body weight.
+
+### Key Findings
+
+1. **Height-Gender Interaction**: The significant interaction between height and gender indicates that the relationship between height and weight differs between males and females. Females show a steeper weight increase per unit height compared to males (about `r round(height_coef/100, 2)` kg per cm for females vs. `r round((height_coef + int_coef)/100, 2)` kg per cm for males).
+
+2. **Physical Characteristics**: Both height and age are significant predictors of weight. Taller individuals and older individuals tend to weigh more.
+
+3. **Lifestyle Factors**: Physical activity frequency (FAF) is negatively associated with weight (about −2.76 kg per unit), while vegetable consumption (FCVC) is positively associated (about +8.02 kg per unit).
+
+4. **Family History**: Family history with overweight is a significant predictor, suggesting genetic or shared environmental factors.
+
+5. **Model Performance**: With an adjusted R-squared of `r round(summary(final_model)$adj.r.squared, 4)`, our model explains approximately `r round(summary(final_model)$adj.r.squared * 100, 1)`% of the variation in weight, which is quite good for a biological/behavioral model.
+
+### Limitations
+
+1. **Sample Representativeness**: Data is limited to three Latin American countries, potentially limiting generalizability to other populations.
+
+2. **Residual Patterns**: Even with the interaction term, some heteroscedasticity remains, suggesting the relationship between predictors and weight may be more complex than captured by linear models.
+
+3. **Multicollinearity**: VIF values are generally acceptable (< 5), indicating multicollinearity is not a severe concern. The interaction term creates expected correlation with component variables.
+
+4. **Model Complexity**: With n = `r nrow(obesity)` observations and `r length(coef(final_model)) - 1` predictors (including interaction), we have adequate sample size. The model may not capture all non-linear relationships.
+
+5. **Influential Observations**: About `r round(100 * length(influential_points) / nrow(obesity), 1)`% of observations are influential. These points may affect model fit but are not excessive.
+
+### Recommendations
+
+1. The model performs well enough for general weight prediction and could be useful for understanding which factors relate to weight.
+
+2. Future improvements could include:
+   - Non-linear modeling approaches (Neural Networks, random forests)
+   - Additional predictors such as genetic markers or detailed dietary information
+   - Geographic and cultural factors beyond the current dataset
+
+# 4. APPENDIX
+
+## 4.1 Important Models
+
+```{r important-models, echo=TRUE, eval=FALSE}
+# Fit the full model with all predictors except NObeyesdad
+# because it directly relates to weight
+full_model <- lm(Weight ~ . - NObeyesdad, data = obesity)
+summary(full_model)
+
+# Backward selection using AIC
+model_backward_aic <- step(full_model, direction = "backward", trace = 0)
+#cat("Backward Selection (AIC) - Variables retained:\n")
+#names(coef(model_backward_aic))
+get_cv_metrics(formula(model_backward_aic), obesity, "Backward AIC")
+
+# Forward selection
+null_model <- lm(Weight ~ 1, data = obesity)
+model_forward_aic <- step(null_model, 
+scope = list(lower = null_model, upper = full_model), direction = "forward", trace = 0)
+#cat("\n\nForward Selection (AIC) - Variables selected:\n")
+#names(coef(model_forward_aic))
+get_cv_metrics(formula(model_forward_aic), obesity, "Forward AIC")
+
+# Both directions
+model_both_aic <- step(full_model, direction = "both", trace = 0)
+get_cv_metrics(formula(model_both_aic), obesity, "Both-direction AIC")
+
+# BIC
+n <- nrow(obesity)
+model_backward_bic <- step(full_model, direction = "backward", k = log(n), trace = 0)
+
+#cat("\n\nBackward Selection (BIC) - Variables retained:\n")
+#names(coef(model_backward_bic))
+get_cv_metrics(formula(model_backward_bic), obesity, "Backward BIC")
+
+# Add polynomial terms for continuous predictors with strong relationships
+model_poly <- lm(Weight ~ poly(Height, 2) + poly(Age, 2) + poly(FAF, 2) + Gender + 
+family_history_with_overweight + FAVC + FCVC + NCP + CAEC + SMOKE + CH2O + 
+SCC + TUE + CALC + MTRANS, data = obesity)
+
+summary(model_poly)$adj.r.squared
+
+# Test if polynomial terms improve the model
+model_height_poly <- lm(Weight ~ Height + I(Height^2) + Age + Gender + 
+family_history_with_overweight + FAVC + FCVC + NCP + 
+CAEC + SMOKE + CH2O + SCC + FAF + TUE + CALC + 
+MTRANS, data = obesity)
+
+anova(model_backward_aic, model_height_poly)
+
+get_cv_metrics(formula(model_poly), obesity, "Polynomial")
+
+# Combine AIC backward selection with best interaction
+model_combined <- lm(Weight ~ Height * Gender + Age + 
+                    family_history_with_overweight + FAVC + FCVC + 
+                    CAEC + CH2O + SCC + FAF + TUE + CALC + MTRANS, 
+                    data = obesity)
+
+cat("Combined Model Formula:\n")
+print(formula(model_combined))
+#summary(model_combined)
+summary_combined <- summary(model_combined)
+
+cat("Adjusted R-squared:", summary_combined$adj.r.squared, "\n")
+cat("Residual Standard Error:", summary_combined$sigma, "kg\n")
+cat("F-statistic:", summary_combined$fstatistic[1], "\n")
+cat("Degrees of Freedom:", summary_combined$df[1], "used,", 
+    summary_combined$df[2], "residual\n")
+```
+
+## 4.2 Selected Final Model
+
+```{r final-model-code, echo=TRUE, eval=FALSE}
+# Final selected model
+final_model <- lm(Weight ~ Height * Gender + Age + 
+                    family_history_with_overweight + FAVC + FCVC + 
+                    CAEC + CH2O + SCC + FAF + TUE + CALC + MTRANS, 
+                    data = obesity)
+
+summary(final_model)
+```
+
+
+## 4.3 Alternative Final Model
+
+```{r alternative-model}
+## Alternative Model: Without Interaction
+alt_model = lm(Weight ~ Age + Height + Gender + 
+                 family_history_with_overweight + FAVC + FCVC + 
+                 CH2O + FAF,
+               data = obesity)
+
+cat("Alternative Model (No Interaction):\n\n")
+summary(alt_model)
+
+cat("\n\nComparison with Final Model:\n")
+cat("Final Model (with interaction):\n")
+cat("  AIC:", AIC(final_model), "\n")
+cat("  Adj R²:", summary(final_model)$adj.r.squared, "\n\n")
+cat("Alternative Model (no interaction):\n")
+cat("  AIC:", AIC(alt_model), "\n")
+cat("  Adj R²:", summary(alt_model)$adj.r.squared, "\n\n")
+
+# Nested F-test
+anova_result = anova(alt_model, final_model)
+cat("Nested F-test for interaction term:\n")
+print(anova_result)
+```
+
+**Observations:**
+
+- Alternative model without interaction has higher AIC and lower Adjusted R²
+- Final model with interaction provides statistically better fit
+- Nested F-test confirms interaction term is significant
+- Interaction meaningfully improves model and should be retained
+
+---
+
+## 4.4 Coefficient Confidence Intervals
+
+```{r confidence_intervals, echo=TRUE, eval=FALSE}
+# 95% Confidence intervals for final model coefficients
+ci_final <- confint(final_model)
+significant_coefs <- summary(final_model)$coefficients[, "Pr(>|t|)"] < 0.05
+
+cat("Significant Coefficients (p < 0.05) with 95% CI:\n\n")
+for(i in which(significant_coefs)) {
+  coef_name <- names(coef(final_model))[i]
+  cat(sprintf("%-30s: %7.4f [%7.4f, %7.4f]\n", 
+              coef_name, 
+              coef(final_model)[i], 
+              ci_final[i, 1], 
+              ci_final[i, 2]))
+}
+```
+
+---
+
+**End of Report**
